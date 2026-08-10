@@ -16,6 +16,59 @@ from urllib.parse import urlparse
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
+_YTDLP_CMD: list[str] | None = None
+
+
+def ytdlp_cmd() -> list[str]:
+    """Return a working yt-dlp invocation.
+
+    Prefers the `yt-dlp` executable, but falls back to `python -m yt_dlp` when
+    the binary exists on PATH yet cannot be executed. On Windows, Smart App
+    Control / WDAC blocks the unsigned yt-dlp.exe shim at *execution* time
+    (OSError WinError 4551) while `shutil.which` still finds it, so presence
+    on PATH is not proof of usability.
+    """
+    global _YTDLP_CMD
+    if _YTDLP_CMD is not None:
+        return _YTDLP_CMD
+
+    exe = shutil.which("yt-dlp")
+    if exe:
+        try:
+            subprocess.run(
+                [exe, "--version"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+            _YTDLP_CMD = [exe]
+            return _YTDLP_CMD
+        except OSError as exc:
+            print(
+                f"[watch] yt-dlp executable is present but blocked ({exc}); "
+                "falling back to `python -m yt_dlp`.",
+                file=sys.stderr,
+            )
+        except subprocess.CalledProcessError:
+            pass
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        raise SystemExit(
+            "yt-dlp is not usable. Install it (`pip install --user yt-dlp`, "
+            "`pipx install yt-dlp`, or `brew install yt-dlp`). If the binary "
+            "exists but is blocked by policy, make sure the `yt_dlp` Python "
+            "module is importable by this interpreter."
+        )
+    _YTDLP_CMD = [sys.executable, "-m", "yt_dlp"]
+    return _YTDLP_CMD
+
 
 def is_url(source: str) -> bool:
     if source.startswith("-"):
@@ -64,13 +117,12 @@ def _pick_video(out_dir: Path) -> Path | None:
 
 def fetch_captions(url: str, out_dir: Path) -> dict:
     """Fetch metadata and best available VTT captions without downloading video."""
-    if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+    base = ytdlp_cmd()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
     cmd = [
-        "yt-dlp",
+        *base,
         "--skip-download",
         "--write-info-json",
         "--write-subs",
@@ -117,15 +169,14 @@ def download_url(
     out_dir: Path,
     audio_only: bool = False,
 ) -> dict:
-    if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+    base = ytdlp_cmd()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
 
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
     cmd = [
-        "yt-dlp",
+        *base,
         "-N", "8",
         "-f", fmt,
         "--merge-output-format", "mp4",
