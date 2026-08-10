@@ -69,6 +69,55 @@ def _check_binaries() -> list[str]:
 
 _PERM_WARNED: set[str] = set()
 
+# Principals that are expected to reach a per-user secrets file on Windows.
+# Well-known SIDs, so this stays correct on non-English installs.
+_WIN_OK_SIDS = {
+    "S-1-5-18",      # NT AUTHORITY\SYSTEM
+    "S-1-5-32-544",  # BUILTIN\Administrators
+}
+
+
+def _windows_extra_readers(path: Path) -> list[str] | None:
+    """SIDs beyond the current user/SYSTEM/Administrators that may read `path`.
+
+    POSIX mode bits are meaningless on Windows: os.stat() always reports 0o666
+    for a writable file and os.chmod() only toggles the read-only flag, so the
+    generic `mode & 0o044` test is a guaranteed false positive there. Read the
+    real ACL instead. Returns None when the ACL cannot be determined.
+    """
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    if ps is None:
+        return None
+    literal = str(path).replace("'", "''")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+        f"foreach ($a in (Get-Acl -LiteralPath '{literal}').Access) {{"
+        "  if ($a.AccessControlType -ne 'Allow') { continue }"
+        "  try { $sid=$a.IdentityReference.Translate("
+        "[Security.Principal.SecurityIdentifier]).Value }"
+        "  catch { $sid=$a.IdentityReference.Value }"
+        "  if ($sid -ne $me) { Write-Output $sid }"
+        "}"
+    )
+    try:
+        result = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    seen: list[str] = []
+    for line in result.stdout.splitlines():
+        sid = line.strip()
+        if sid and sid not in _WIN_OK_SIDS and sid not in seen:
+            seen.append(sid)
+    return seen
+
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
@@ -77,6 +126,18 @@ def _check_file_permissions(path: Path) -> None:
     if key in _PERM_WARNED:
         return
     try:
+        if os.name == "nt":
+            extra = _windows_extra_readers(path)
+            if not extra:
+                return
+            _PERM_WARNED.add(key)
+            sys.stderr.write(
+                f"[watch] WARNING: {path} is readable by {', '.join(extra)}. "
+                f'Fix: icacls "{path}" /inheritance:r '
+                f'/grant:r "%USERNAME%:F" "SYSTEM:F" "Administrators:F"\n'
+            )
+            sys.stderr.flush()
+            return
         mode = path.stat().st_mode
         if mode & 0o044:
             _PERM_WARNED.add(key)
