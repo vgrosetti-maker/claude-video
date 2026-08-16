@@ -1,5 +1,11 @@
 # /watch
 
+> **This is a fork.** It is [`bradautomates/claude-video`](https://github.com/bradautomates/claude-video)
+> plus three fixes that make `/watch` run on Windows 11 with App Control enabled,
+> and on ffmpeg 9 (which removed `-vsync`). Symptoms, causes and install
+> instructions: **[WINDOWS-FIXES.md](WINDOWS-FIXES.md)**. Everything below is
+> upstream's documentation, unchanged.
+
 **Give Claude the ability to watch any video.**
 
 Claude Code (recommended — auto-updates via marketplace):
